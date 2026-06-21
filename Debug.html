@@ -649,8 +649,9 @@
     const r = new SR();
     recog = r;
     r.lang = "ko-KR";
-    r.continuous = true;
+    r.continuous = false;     // 안드로이드 크롬 우회: 한 번 듣고 끝 → 재시작
     r.interimResults = true;
+    r.maxAlternatives = 3;
     r.onstart = () => dbg("● 인식 세션 시작됨 (onstart)");
     r.onaudiostart = () => dbg("● 오디오 입력 시작 (onaudiostart)");
     r.onspeechstart = () => dbg("● 말소리 감지 (onspeechstart)");
@@ -661,14 +662,14 @@
       let text = "";
       let isFinal = false;
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        text += e.results[i][0].transcript;
+        for (let j = 0; j < e.results[i].length; j++) text += e.results[i][j].transcript + "|";
         if (e.results[i].isFinal) isFinal = true;
       }
       dbg("들림" + (isFinal ? "(확정)" : "(중간)") + ": \"" + text + "\"");
       const t = text.replace(/\s/g, "");
-      if (now - lastCmd < 1200) return;
-      if (/다음|넘겨|넘김/.test(t)) { lastCmd = now; nextPage(); flashBadge("▶ 다음"); dbg("✔ '다음' 매칭 → 다음 페이지", "hit"); }
-      else if (/이전|뒤로/.test(t)) { lastCmd = now; prevPage(); flashBadge("◀ 이전"); dbg("✔ '이전' 매칭 → 이전 페이지", "hit"); }
+      if (now - lastCmd < 1000) return;
+      if (/다음|넘겨|넘김|next|넥스트/i.test(t)) { lastCmd = now; nextPage(); flashBadge("▶ 다음"); dbg("✔ '다음' 매칭 → 다음 페이지", "hit"); }
+      else if (/이전|뒤로|back|백/i.test(t)) { lastCmd = now; prevPage(); flashBadge("◀ 이전"); dbg("✔ '이전' 매칭 → 이전 페이지", "hit"); }
     };
     r.onerror = (e) => {
       dbg("✖ 에러: " + e.error, "err");
@@ -677,8 +678,8 @@
         alert("마이크 권한이 필요해요.");
       }
     };
-    r.onend = () => { dbg("○ 세션 끝 (onend)" + (micOn ? " → 재시작" : "")); if (micOn) setTimeout(startRecog, 250); };
-    try { r.start(); } catch (err) { dbg("✖ start() 예외: " + err, "err"); }
+    r.onend = () => { dbg("○ 세션 끝 (onend)" + (micOn ? " → 재시작" : "")); if (micOn) setTimeout(startRecog, 300); };
+    try { r.start(); dbg("· start() 호출함"); } catch (err) { dbg("✖ start() 예외: " + err, "err"); setTimeout(startRecog, 500); }
   }
   function stopRecog() {
     if (recog) {
