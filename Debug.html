@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>악보 뷰어</title>
+<style>
+  :root {
+    --bg: #15171c;
+    --bar: rgba(26, 28, 34, 0.92);
+    --accent: #e0a96d;
+    --text: #e8e6e1;
+    --muted: #8b8d94;
+    --line: rgba(255, 255, 255, 0.08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif;
+    overscroll-behavior: none;
+    touch-action: manipulation;
+  }
+
+  /* ---- 페이지 표시 영역 ---- */
+  #stage {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    touch-action: none;
+    overflow: hidden;
+  }
+  #pageWrap {
+    position: relative;
+    display: none;
+    background: #fff;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  }
+  #pageCanvas { display: block; }
+  #annotCanvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    pointer-events: none;   /* 평소엔 탭이 아래(페이지 넘김)로 통과 */
+  }
+  #annotCanvas.active { pointer-events: auto; }
+
+  /* ---- 상단 컨트롤 바 ---- */
+  #bar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 30;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    padding-top: max(10px, env(safe-area-inset-top));
+    background: var(--bar);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+    transition: opacity 0.3s, transform 0.3s;
+  }
+  #bar.hidden { opacity: 0; transform: translateY(-100%); pointer-events: none; }
+
+  #bar button {
+    appearance: none;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,0.04);
+    color: var(--text);
+    font-size: 15px;
+    padding: 8px 14px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  #bar button:active { background: rgba(224,169,109,0.18); border-color: var(--accent); }
+  #bar button.on { background: var(--accent); border-color: var(--accent); color: #1a1207; }
+  #bar button#micBtn.on { background: #e0403e; border-color: #e0403e; color: #fff; }
+  #micDot {
+    position: fixed;
+    left: 14px;
+    bottom: max(14px, env(safe-area-inset-bottom));
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #e0403e;
+    z-index: 25;
+    animation: micpulse 1.4s infinite;
+  }
+  #micDot[hidden] { display: none; }
+  #dbgLog {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: 70;
+    max-height: 40vh;
+    overflow-y: auto;
+    background: rgba(0,0,0,0.85);
+    color: #6cf06c;
+    font-family: monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 10px 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  #dbgLog[hidden] { display: none; }
+  #dbgLog .err { color: #ff7a7a; }
+  #dbgLog .hit { color: #ffd54a; }
+  @keyframes micpulse {
+    0%   { box-shadow: 0 0 0 0 rgba(224,64,62,0.55); }
+    70%  { box-shadow: 0 0 0 11px rgba(224,64,62,0); }
+    100% { box-shadow: 0 0 0 0 rgba(224,64,62,0); }
+  }
+  #bar button.icon { padding: 8px 12px; font-size: 17px; line-height: 1; }
+
+  /* ---- 색 팔레트 (필기 모드 둘째 줄) ---- */
+  #tools {
+    flex-basis: 100%;
+    display: none;
+    align-items: center;
+    gap: 9px;
+    padding-top: 2px;
+  }
+  #tools .swatch {
+    appearance: none;
+    padding: 0;
+    cursor: pointer;
+    border: 2px solid rgba(255,255,255,0.25);
+    flex: none;
+  }
+  #tools .swatch.pen { width: 26px; height: 26px; border-radius: 50%; }
+  #tools .swatch.hl  { width: 36px; height: 22px; border-radius: 6px; opacity: 0.9; }
+  #tools .swatch.sel { border-color: #fff; box-shadow: 0 0 0 2px var(--accent); }
+  #tools .tools-div { width: 1px; height: 24px; background: var(--line); flex: none; margin: 0 3px; }
+
+  #fileName {
+    flex: 1;
+    min-width: 0;
+    font-size: 14px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #pageInfo {
+    font-variant-numeric: tabular-nums;
+    font-size: 15px;
+    color: var(--text);
+    min-width: 70px;
+    text-align: center;
+  }
+
+  /* ---- 페이지 넘김 시 잠깐 뜨는 배지 ---- */
+  #pageBadge {
+    position: fixed;
+    bottom: max(24px, env(safe-area-inset-bottom));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    background: rgba(20,22,27,0.85);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    font-size: 16px;
+    padding: 8px 18px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    opacity: 0;
+    transition: opacity 0.4s;
+    pointer-events: none;
+  }
+  #pageBadge.show { opacity: 1; }
+
+  /* ---- 빈 화면 (시작) ---- */
+  #empty {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    text-align: center;
+    padding: 24px;
+  }
+  #empty .glyph { font-size: 56px; opacity: 0.5; }
+  #empty h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  #empty p { color: var(--muted); font-size: 15px; max-width: 320px; line-height: 1.5; }
+  #openBtnBig {
+    appearance: none;
+    border: none;
+    background: var(--accent);
+    color: #1a1207;
+    font-size: 17px;
+    font-weight: 600;
+    padding: 14px 30px;
+    border-radius: 14px;
+    cursor: pointer;
+    margin-top: 4px;
+  }
+  #openBtnBig:active { filter: brightness(0.92); }
+  #libBtnBig {
+    appearance: none;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,0.04);
+    color: var(--text);
+    font-size: 15px;
+    padding: 11px 22px;
+    border-radius: 12px;
+    cursor: pointer;
+  }
+  #libBtnBig:active { background: rgba(224,169,109,0.18); }
+
+  /* ---- 라이브러리 패널 ---- */
+  #library {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.55);
+    padding: 24px;
+  }
+  #library[hidden] { display: none; }
+  .lib-panel {
+    width: 100%;
+    max-width: 460px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    background: #1d2026;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  .lib-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 18px;
+    font-size: 17px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--line);
+  }
+  .lib-head button {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+  #libList { overflow-y: auto; padding: 6px; }
+  .lib-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .lib-item:active { background: rgba(255,255,255,0.05); }
+  .lib-item .name {
+    flex: 1;
+    min-width: 0;
+    font-size: 15px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .lib-item .del {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 16px;
+    padding: 6px 8px;
+    cursor: pointer;
+    flex: none;
+  }
+  .lib-item .del:active { color: #e06d6d; }
+  .lib-empty {
+    padding: 32px 20px 40px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  #loading {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(21,23,28,0.7);
+    color: var(--muted);
+    font-size: 15px;
+  }
+
+  input[type="file"] { display: none; }
+</style>
+</head>
+<body>
+
+  <div id="stage">
+    <div id="pageWrap">
+      <canvas id="pageCanvas"></canvas>
+      <canvas id="annotCanvas"></canvas>
+    </div>
+  </div>
+
+  <div id="bar" class="hidden">
+    <button id="openBtn" class="icon" title="파일 열기">📁</button>
+    <button id="libBtn" class="icon" title="내 악보">📚</button>
+    <span id="fileName">악보를 불러오세요</span>
+    <button id="prevBtn" class="icon" title="이전">◀</button>
+    <span id="pageInfo">– / –</span>
+    <button id="nextBtn" class="icon" title="다음">▶</button>
+    <button id="penBtn" class="icon" title="필기">✏️</button>
+    <button id="eraserBtn" class="icon" title="지우개">🧽</button>
+    <button id="undoBtn" class="icon" title="실행취소">↩</button>
+    <button id="micBtn" class="icon" title="음성 넘김 (다음/이전)">🎤</button>
+    <button id="fsBtn" class="icon" title="전체화면">⛶</button>
+    <div id="tools"></div>
+  </div>
+
+  <div id="pageBadge"></div>
+  <div id="micDot" hidden></div>
+  <div id="dbgLog" hidden></div>
+
+  <div id="empty">
+    <div class="glyph">🎼</div>
+    <h1>악보 뷰어</h1>
+    <p>PDF 악보를 불러오면 한 페이지씩 전체화면으로 보여줍니다. 불러온 뒤 화면을 한 번 탭하면 주소창이 사라지고, 이후엔 탭하면 다음 페이지 · 왼쪽으로 밀면 이전 페이지로 넘어갑니다.</p>
+    <button id="openBtnBig">PDF 열기</button>
+    <button id="libBtnBig">📚 내 악보</button>
+  </div>
+
+  <div id="loading">불러오는 중…</div>
+
+  <div id="library" hidden>
+    <div class="lib-panel">
+      <div class="lib-head">
+        <span>내 악보</span>
+        <button id="libClose" class="icon">✕</button>
+      </div>
+      <div id="libList"></div>
+      <div id="libEmpty" class="lib-empty">아직 저장된 악보가 없어요.<br>PDF를 한 번 열면 여기에 바로가기가 생깁니다.</div>
+    </div>
+  </div>
+
+  <input type="file" id="fileInput" accept="application/pdf">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+  const canvas   = document.getElementById("pageCanvas");
+  const ctx      = canvas.getContext("2d");
+  const annot    = document.getElementById("annotCanvas");
+  const actx     = annot.getContext("2d");
+  const pageWrap = document.getElementById("pageWrap");
+  const stage    = document.getElementById("stage");
+  const bar       = document.getElementById("bar");
+  const empty     = document.getElementById("empty");
+  const loading   = document.getElementById("loading");
+  const fileInput = document.getElementById("fileInput");
+  const fileName  = document.getElementById("fileName");
+  const pageInfo  = document.getElementById("pageInfo");
+  const pageBadge = document.getElementById("pageBadge");
+
+  let pdfDoc = null;
+  let currentPage = 1;
+  let totalPages = 0;
+  let rendering = false;
+  let pendingPage = null;   // 렌더링 중 들어온 페이지 요청
+  let barTimer = null;
+  let autoFsArmed = false;  // 로드 후 첫 탭에서 전체화면 진입
+
+  // ---------- 필기 상태 ----------
+  const PEN_W = 0.0018;          // 가장 얇은 펜 (페이지 높이 대비 비율)
+  const HL_W = 0.024;            // 형광펜 굵기
+  const PEN_COLORS = ["#222222", "#1c64d6", "#e0403e", "#1f9d55"];
+  const HL_COLORS  = ["#ffd54a", "#a6e88a", "#ff9ecb", "#8fd0ff"];
+  let drawMode = false;          // 필기 모드 on/off
+  let tool = "pen";              // "pen" | "hl" | "eraser"
+  let penColor = PEN_COLORS[1];  // 기본 파랑
+  let hlColor = HL_COLORS[0];    // 기본 노랑
+  let currentFileKey = "";
+  let currentStrokes = [];       // 현재 페이지의 필기 (정규화 좌표)
+  let strokesByKey = {};         // 세션 캐시: key -> 필기 배열
+
+  // ---------- 파일 열기 ----------
+  function openFile() { fileInput.click(); }
+  document.getElementById("openBtn").addEventListener("click", openFile);
+  document.getElementById("openBtnBig").addEventListener("click", openFile);
+
+  // PDF 바이트로 문서 열기 (디스크 선택 / 라이브러리 사본 둘 다 사용)
+  async function openPdf(buf, name, size, store) {
+    loading.style.display = "flex";
+    try {
+      const forPdf = buf.slice(0);   // pdf.js가 버퍼를 가져가도 원본은 보존
+      pdfDoc = await pdfjsLib.getDocument({ data: forPdf, verbosity: 0 }).promise;
+      cropCache = {};
+      strokesByKey = {};
+      currentFileKey = name + ":" + size;
+      totalPages = pdfDoc.numPages;
+      currentPage = 1;
+      fileName.textContent = name.replace(/\.pdf$/i, "");
+      empty.style.display = "none";
+      pageWrap.style.display = "block";
+      if (store) idbPutFile({ key: currentFileKey, name: name, size: size, addedAt: Date.now(), data: buf });
+      await renderPage(currentPage);
+      autoFsArmed = true;
+      showBar();
+    } catch (err) {
+      alert("이 PDF를 열 수 없습니다. 파일이 손상되었거나 지원되지 않는 형식일 수 있어요.");
+    } finally {
+      loading.style.display = "none";
+    }
+  }
+
+  fileInput.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const buf = await file.arrayBuffer();
+    await openPdf(buf, file.name, file.size, true);
+    fileInput.value = "";   // 같은 파일 다시 열 수 있게
+  });
+
+  // ---------- 페이지 렌더링 ----------
+  // 페이지별 콘텐츠(악보) 영역 캐시 — 흰 여백을 제외한 실제 내용 범위
+  let cropCache = {};
+
+  // 저해상도로 한 번 그려서 흰 여백이 아닌 부분의 경계를 찾음
+  async function detectCrop(page) {
+    const base = page.getViewport({ scale: 1 });
+    const ds = 700 / base.width;
+    const vp = page.getViewport({ scale: ds });
+    const oc = document.createElement("canvas");
+    oc.width = Math.ceil(vp.width);
+    oc.height = Math.ceil(vp.height);
+    const octx = oc.getContext("2d", { willReadFrequently: true });
+    octx.fillStyle = "#fff";
+    octx.fillRect(0, 0, oc.width, oc.height);
+    await page.render({ canvasContext: octx, viewport: vp }).promise;
+    const { data, width, height } = octx.getImageData(0, 0, oc.width, oc.height);
+    let x0 = width, y0 = height, x1 = 0, y1 = 0, found = false;
+    for (let y = 0; y < height; y += 2) {
+      for (let x = 0; x < width; x += 2) {
+        const i = (y * width + x) * 4;
+        if (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245) {
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+          found = true;
+        }
+      }
+    }
+    if (!found) return { l: 0, t: 0, r: 1, b: 1 };
+    const pad = 0.012;   // 안전 여유 (내용이 잘리지 않게 살짝 남김)
+    return {
+      l: Math.max(0, x0 / width - pad),
+      t: Math.max(0, y0 / height - pad),
+      r: Math.min(1, x1 / width + pad),
+      b: Math.min(1, y1 / height + pad),
+    };
+  }
+
+  async function renderPage(num) {
+    if (!pdfDoc) return;
+    if (rendering) { pendingPage = num; return; }
+    rendering = true;
+
+    const page = await pdfDoc.getPage(num);
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const base = page.getViewport({ scale: 1 });
+
+    if (!cropCache[num]) cropCache[num] = await detectCrop(page);
+    const crop = cropCache[num];
+
+    // 흰 여백을 뺀 실제 내용 크기(pt)
+    const contentW = (crop.r - crop.l) * base.width;
+    const contentH = (crop.b - crop.t) * base.height;
+
+    // 비율 유지하며 화면 안에 다 보이도록 (찌그러짐/잘림 없음)
+    const vw = stage.clientWidth;
+    const vh = stage.clientHeight;
+    const fit = Math.min(vw / contentW, vh / contentH);
+    const scale = fit * dpr;
+
+    const fullVp = page.getViewport({ scale });
+    const offsetX = crop.l * base.width * scale;
+    const offsetY = crop.t * base.height * scale;
+
+    canvas.width  = Math.floor(contentW * scale);
+    canvas.height = Math.floor(contentH * scale);
+    canvas.style.width  = Math.floor(contentW * fit) + "px";
+    canvas.style.height = Math.floor(contentH * fit) + "px";
+
+    // 필기 캔버스도 같은 해상도로 맞춤
+    annot.width = canvas.width;
+    annot.height = canvas.height;
+
+    // 전체 페이지를 그리되, 내용 영역이 캔버스 좌상단에 오도록 이동
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    await page.render({
+      canvasContext: ctx,
+      viewport: fullVp,
+      transform: [1, 0, 0, 1, -offsetX, -offsetY],
+    }).promise;
+
+    pageInfo.textContent = num + " / " + totalPages;
+    rendering = false;
+
+    // 이 페이지의 필기 불러와 그리기
+    currentStrokes = await loadStrokes(num);
+    drawAnnotations();
+
+    if (pendingPage !== null && pendingPage !== num) {
+      const p = pendingPage; pendingPage = null;
+      renderPage(p);
+    } else {
+      pendingPage = null;
+    }
+  }
+
+  // ---------- 페이지 이동 ----------
+  function goTo(num) {
+    if (!pdfDoc) return;
+    num = Math.max(1, Math.min(totalPages, num));
+    if (num === currentPage) return;
+    currentPage = num;
+    flashBadge(currentPage + " / " + totalPages);
+    renderPage(currentPage);
+  }
+  function nextPage() { goTo(currentPage + 1); }
+  function prevPage() { goTo(currentPage - 1); }
+
+  // ---------- 탭 / 스와이프 ----------
+  // 탭 → 다음 페이지, 왼쪽으로 드래그 → 이전 페이지, 오른쪽으로 드래그 → 다음 페이지
+  let touchStart = null;
+  stage.addEventListener("pointerdown", (e) => {
+    touchStart = { x: e.clientX, y: e.clientY };
+  });
+  stage.addEventListener("pointercancel", () => { touchStart = null; });
+  stage.addEventListener("pointerup", (e) => {
+    if (!pdfDoc || !touchStart) { touchStart = null; return; }
+    if (drawMode) { touchStart = null; return; }   // 필기 중엔 페이지 안 넘김
+    const dx = e.clientX - touchStart.x;
+    const dy = e.clientY - touchStart.y;
+    const start = touchStart;
+    touchStart = null;
+
+    const SWIPE = 40;
+    // 가로 드래그(스와이프)
+    if (Math.abs(dx) > SWIPE && Math.abs(dx) > Math.abs(dy)) {
+      if (dx < 0) prevPage();   // 왼쪽으로 드래그 → 이전
+      else nextPage();          // 오른쪽으로 드래그 → 다음
+      return;
+    }
+    // 애매하게 끌린 동작은 무시
+    if (Math.hypot(dx, dy) > 12) return;
+
+    // --- 여기부터 '탭' ---
+    // 맨 위쪽 탭 → 상단 바만 띄움
+    if (start.y < 120 && bar.classList.contains("hidden")) { showBar(); return; }
+    // 로드 후 첫 탭 → 전체화면 진입 (페이지는 안 넘김)
+    if (autoFsArmed && !isFullscreen() && fsSupported) {
+      autoFsArmed = false;
+      enterFullscreen();
+      return;
+    }
+    // 일반 탭 → 다음 페이지
+    nextPage();
+  });
+  document.getElementById("nextBtn").addEventListener("click", (e) => { e.stopPropagation(); nextPage(); });
+  document.getElementById("prevBtn").addEventListener("click", (e) => { e.stopPropagation(); prevPage(); });
+
+  // ---------- 전체화면 ----------
+  const docEl = document.documentElement;
+  const fsSupported = !!(docEl.requestFullscreen || docEl.webkitRequestFullscreen);
+  function isFullscreen() { return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+  function enterFullscreen() {
+    const fn = docEl.requestFullscreen || docEl.webkitRequestFullscreen;
+    if (fn) { try { fn.call(docEl); } catch (e) {} }
+  }
+  function exitFullscreen() {
+    const fn = document.exitFullscreen || document.webkitExitFullscreen;
+    if (fn) { try { fn.call(document); } catch (e) {} }
+  }
+  document.getElementById("fsBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    isFullscreen() ? exitFullscreen() : enterFullscreen();
+    showBar();
+  });
+
+  // ---------- 음성 넘김 (Web Speech API) — 디버그 버전 ----------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const micBtn = document.getElementById("micBtn");
+  const micDot = document.getElementById("micDot");
+  const dbgLog = document.getElementById("dbgLog");
+  let recog = null, micOn = false, lastCmd = 0;
+
+  function dbg(msg, cls) {
+    const line = document.createElement("div");
+    if (cls) line.className = cls;
+    const t = new Date().toLocaleTimeString();
+    line.textContent = "[" + t + "] " + msg;
+    dbgLog.insertBefore(line, dbgLog.firstChild);
+    while (dbgLog.childNodes.length > 40) dbgLog.removeChild(dbgLog.lastChild);
+  }
+
+  function setMic(on) {
+    if (on && !SR) {
+      alert("이 브라우저는 음성 인식을 지원하지 않아요.");
+      dbg("SpeechRecognition 미지원!", "err");
+      return;
+    }
+    micOn = on;
+    micBtn.classList.toggle("on", on);
+    micDot.hidden = !on;
+    dbgLog.hidden = !on;
+    if (on) { dbg("마이크 ON — 인식 시작 시도"); startRecog(); }
+    else { dbg("마이크 OFF"); stopRecog(); }
+  }
+  function startRecog() {
+    if (!SR || !micOn) return;
+    const r = new SR();
+    recog = r;
+    r.lang = "ko-KR";
+    r.continuous = true;
+    r.interimResults = true;
+    r.onstart = () => dbg("● 인식 세션 시작됨 (onstart)");
+    r.onaudiostart = () => dbg("● 오디오 입력 시작 (onaudiostart)");
+    r.onspeechstart = () => dbg("● 말소리 감지 (onspeechstart)");
+    r.onspeechend = () => dbg("○ 말소리 끝 (onspeechend)");
+    r.onnomatch = () => dbg("? 인식 실패 (onnomatch)", "err");
+    r.onresult = (e) => {
+      const now = Date.now();
+      let text = "";
+      let isFinal = false;
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        text += e.results[i][0].transcript;
+        if (e.results[i].isFinal) isFinal = true;
+      }
+      dbg("들림" + (isFinal ? "(확정)" : "(중간)") + ": \"" + text + "\"");
+      const t = text.replace(/\s/g, "");
+      if (now - lastCmd < 1200) return;
+      if (/다음|넘겨|넘김/.test(t)) { lastCmd = now; nextPage(); flashBadge("▶ 다음"); dbg("✔ '다음' 매칭 → 다음 페이지", "hit"); }
+      else if (/이전|뒤로/.test(t)) { lastCmd = now; prevPage(); flashBadge("◀ 이전"); dbg("✔ '이전' 매칭 → 이전 페이지", "hit"); }
+    };
+    r.onerror = (e) => {
+      dbg("✖ 에러: " + e.error, "err");
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        setMic(false);
+        alert("마이크 권한이 필요해요.");
+      }
+    };
+    r.onend = () => { dbg("○ 세션 끝 (onend)" + (micOn ? " → 재시작" : "")); if (micOn) setTimeout(startRecog, 250); };
+    try { r.start(); } catch (err) { dbg("✖ start() 예외: " + err, "err"); }
+  }
+  function stopRecog() {
+    if (recog) {
+      try { recog.onend = null; recog.stop(); } catch (_) {}
+      recog = null;
+    }
+  }
+  micBtn.addEventListener("click", (e) => { e.stopPropagation(); setMic(!micOn); });
+
+  // ---------- 필기 저장 (IndexedDB, 안 되면 세션 메모리만) ----------
+  let db = null;
+  (function openDB() {
+    try {
+      const req = indexedDB.open("scoreViewer", 2);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        if (!d.objectStoreNames.contains("annot")) d.createObjectStore("annot");
+        if (!d.objectStoreNames.contains("files")) d.createObjectStore("files");
+      };
+      req.onsuccess = () => { db = req.result; };
+      req.onerror = () => { db = null; };
+    } catch (e) { db = null; }
+  })();
+
+  // 라이브러리(PDF 사본) 저장소
+  function idbPutFile(rec) {
+    if (!db) return;
+    try { db.transaction("files", "readwrite").objectStore("files").put(rec, rec.key); } catch (e) {}
+  }
+  function idbGetFile(key) {
+    return new Promise((res) => {
+      if (!db) return res(null);
+      try {
+        const r = db.transaction("files", "readonly").objectStore("files").get(key);
+        r.onsuccess = () => res(r.result || null);
+        r.onerror = () => res(null);
+      } catch (e) { res(null); }
+    });
+  }
+  function idbAllFiles() {
+    return new Promise((res) => {
+      if (!db) return res([]);
+      try {
+        const r = db.transaction("files", "readonly").objectStore("files").getAll();
+        r.onsuccess = () => res(r.result || []);
+        r.onerror = () => res([]);
+      } catch (e) { res([]); }
+    });
+  }
+  function idbDeleteFile(key) {
+    if (!db) return;
+    try { db.transaction("files", "readwrite").objectStore("files").delete(key); } catch (e) {}
+  }
+
+  // ---------- 라이브러리 (내 악보 목록) ----------
+  const libOverlay = document.getElementById("library");
+  const libList = document.getElementById("libList");
+  const libEmpty = document.getElementById("libEmpty");
+  async function openLibrary() {
+    const files = await idbAllFiles();
+    files.sort((a, b) => a.name.localeCompare(b.name, "ko", { numeric: true, sensitivity: "base" }));
+    libList.innerHTML = "";
+    libEmpty.style.display = files.length ? "none" : "block";
+    for (const f of files) {
+      const item = document.createElement("div");
+      item.className = "lib-item";
+      const nm = document.createElement("span");
+      nm.className = "name";
+      nm.textContent = f.name.replace(/\.pdf$/i, "");
+      const del = document.createElement("button");
+      del.className = "del";
+      del.textContent = "✕";
+      del.title = "목록에서 삭제";
+      item.appendChild(nm);
+      item.appendChild(del);
+      item.addEventListener("click", async () => {
+        closeLibrary();
+        const rec = await idbGetFile(f.key);
+        if (rec && rec.data) openPdf(rec.data, rec.name, rec.size, false);
+      });
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        idbDeleteFile(f.key);
+        item.remove();
+        if (!libList.children.length) libEmpty.style.display = "block";
+      });
+      libList.appendChild(item);
+    }
+    libOverlay.hidden = false;
+  }
+  function closeLibrary() { libOverlay.hidden = true; }
+  document.getElementById("libBtn").addEventListener("click", (e) => { e.stopPropagation(); openLibrary(); });
+  document.getElementById("libBtnBig").addEventListener("click", (e) => { e.stopPropagation(); openLibrary(); });
+  document.getElementById("libClose").addEventListener("click", (e) => { e.stopPropagation(); closeLibrary(); });
+  libOverlay.addEventListener("click", (e) => { if (e.target === libOverlay) closeLibrary(); });
+  function idbGet(key) {
+    return new Promise((res) => {
+      if (!db) return res(null);
+      try {
+        const r = db.transaction("annot", "readonly").objectStore("annot").get(key);
+        r.onsuccess = () => res(r.result || null);
+        r.onerror = () => res(null);
+      } catch (e) { res(null); }
+    });
+  }
+  function idbSet(key, val) {
+    if (!db) return;
+    try { db.transaction("annot", "readwrite").objectStore("annot").put(val, key); } catch (e) {}
+  }
+  function strokeKey(page) { return currentFileKey + "::" + page; }
+
+  async function loadStrokes(page) {
+    const key = strokeKey(page);
+    if (strokesByKey[key]) return strokesByKey[key];
+    const saved = await idbGet(key);
+    strokesByKey[key] = Array.isArray(saved) ? saved : [];
+    return strokesByKey[key];
+  }
+  function saveStrokes(page) {
+    const key = strokeKey(page);
+    strokesByKey[key] = currentStrokes;
+    idbSet(key, currentStrokes);
+  }
+
+  // ---------- 필기 그리기 ----------
+  function drawAnnotations() {
+    actx.setTransform(1, 0, 0, 1, 0, 0);
+    actx.clearRect(0, 0, annot.width, annot.height);
+    for (const s of currentStrokes) drawStroke(s);
+  }
+  function applyStyle(s) {
+    actx.globalAlpha = s.type === "hl" ? 0.32 : 1;
+    actx.strokeStyle = s.color;
+    actx.lineWidth = Math.max(1, s.w * annot.height);
+    actx.lineCap = "round";
+    actx.lineJoin = "round";
+  }
+  function drawStroke(s) {
+    if (!s.points || s.points.length === 0) return;
+    actx.save();
+    applyStyle(s);
+    actx.beginPath();
+    const p0 = s.points[0];
+    actx.moveTo(p0[0] * annot.width, p0[1] * annot.height);
+    if (s.points.length === 1) {
+      actx.lineTo(p0[0] * annot.width + 0.5, p0[1] * annot.height);
+    } else {
+      for (let i = 1; i < s.points.length; i++) {
+        actx.lineTo(s.points[i][0] * annot.width, s.points[i][1] * annot.height);
+      }
+    }
+    actx.stroke();
+    actx.restore();
+  }
+
+  // ---------- 필기 입력 ----------
+  let drawing = false, curStroke = null;
+  function ptFromEvent(e) {
+    const r = annot.getBoundingClientRect();
+    return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
+  }
+  function eraseAt(p) {
+    const thr = 0.022;
+    let changed = false;
+    for (let i = currentStrokes.length - 1; i >= 0; i--) {
+      const pts = currentStrokes[i].points;
+      if (pts.some(q => Math.hypot(q[0] - p[0], q[1] - p[1]) < thr)) {
+        currentStrokes.splice(i, 1);
+        changed = true;
+      }
+    }
+    if (changed) drawAnnotations();
+  }
+  annot.addEventListener("pointerdown", (e) => {
+    if (!drawMode) return;
+    e.preventDefault();
+    try { annot.setPointerCapture(e.pointerId); } catch (_) {}
+    drawing = true;
+    const p = ptFromEvent(e);
+    if (tool === "eraser") { eraseAt(p); return; }
+    curStroke = (tool === "hl")
+      ? { type: "hl", color: hlColor, w: HL_W, points: [p] }
+      : { type: "pen", color: penColor, w: PEN_W, points: [p] };
+    currentStrokes.push(curStroke);
+  });
+  annot.addEventListener("pointermove", (e) => {
+    if (!drawMode || !drawing) return;
+    const p = ptFromEvent(e);
+    if (tool === "eraser") { eraseAt(p); return; }
+    curStroke.points.push(p);
+    if (curStroke.type === "hl") {
+      // 형광펜은 전체를 한 번에 다시 그려 겹침 얼룩 방지
+      drawAnnotations();
+    } else {
+      // 펜은 새 구간만 빠르게 덧그림
+      const n = curStroke.points.length;
+      const a = curStroke.points[n - 2], b = curStroke.points[n - 1];
+      actx.save();
+      applyStyle(curStroke);
+      actx.beginPath();
+      actx.moveTo(a[0] * annot.width, a[1] * annot.height);
+      actx.lineTo(b[0] * annot.width, b[1] * annot.height);
+      actx.stroke();
+      actx.restore();
+    }
+  });
+  function endDraw() {
+    if (!drawing) return;
+    drawing = false;
+    curStroke = null;
+    saveStrokes(currentPage);
+  }
+  annot.addEventListener("pointerup", endDraw);
+  annot.addEventListener("pointercancel", endDraw);
+
+  // ---------- 필기 모드 / 도구 / 색 ----------
+  const penBtn = document.getElementById("penBtn");
+  const eraserBtn = document.getElementById("eraserBtn");
+  const tools = document.getElementById("tools");
+  const swatches = [];
+
+  // 색 팔레트(스와치) 구성
+  function buildSwatches() {
+    PEN_COLORS.forEach((c) => addSwatch("pen", c));
+    const div = document.createElement("span");
+    div.className = "tools-div";
+    tools.appendChild(div);
+    HL_COLORS.forEach((c) => addSwatch("hl", c));
+  }
+  function addSwatch(t, color) {
+    const b = document.createElement("button");
+    b.className = "swatch " + t;
+    b.style.background = color;
+    b.dataset.tool = t;
+    b.dataset.color = color;
+    b.addEventListener("click", (e) => { e.stopPropagation(); setTool(t, color); });
+    tools.appendChild(b);
+    swatches.push(b);
+  }
+  function refreshSwatches() {
+    const activeColor = tool === "hl" ? hlColor : penColor;
+    swatches.forEach((b) => {
+      const sel = drawMode && b.dataset.tool === tool && b.dataset.color === activeColor;
+      b.classList.toggle("sel", sel);
+    });
+    eraserBtn.classList.toggle("on", drawMode && tool === "eraser");
+  }
+  function setTool(t, color) {
+    tool = t;
+    if (t === "pen" && color) penColor = color;
+    if (t === "hl" && color) hlColor = color;
+    if (!drawMode) setDrawMode(true);
+    else refreshSwatches();
+  }
+  function setDrawMode(on) {
+    drawMode = on;
+    annot.classList.toggle("active", on);
+    penBtn.classList.toggle("on", on);
+    tools.style.display = on ? "flex" : "none";
+    if (on) {
+      if (tool === "eraser") tool = "pen";
+      clearTimeout(barTimer);
+      bar.classList.remove("hidden");   // 필기 중 바 유지
+    } else {
+      showBar();
+    }
+    refreshSwatches();
+  }
+  buildSwatches();
+
+  penBtn.addEventListener("click", (e) => { e.stopPropagation(); setDrawMode(!drawMode); });
+  eraserBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!drawMode) setDrawMode(true);
+    tool = "eraser";
+    refreshSwatches();
+  });
+  document.getElementById("undoBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!currentStrokes.length) return;
+    currentStrokes.pop();
+    drawAnnotations();
+    saveStrokes(currentPage);
+  });
+
+  // 데스크탑 테스트용 키보드
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") { e.preventDefault(); nextPage(); }
+    if (e.key === "ArrowLeft"  || e.key === "PageUp") { e.preventDefault(); prevPage(); }
+  });
+
+  // ---------- 페이지 배지 (잠깐 표시) ----------
+  let badgeTimer = null;
+  function flashBadge(text) {
+    pageBadge.textContent = text;
+    pageBadge.classList.add("show");
+    clearTimeout(badgeTimer);
+    badgeTimer = setTimeout(() => pageBadge.classList.remove("show"), 900);
+  }
+
+  // ---------- 상단 바 자동 숨김 ----------
+  function showBar() {
+    bar.classList.remove("hidden");
+    clearTimeout(barTimer);
+    barTimer = setTimeout(() => bar.classList.add("hidden"), 3000);
+  }
+
+  // ---------- 화면 회전 / 크기 변경 시 다시 렌더 ----------
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (!pdfDoc) return;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => renderPage(currentPage), 150);
+  });
+</script>
+</body>
+</html>
